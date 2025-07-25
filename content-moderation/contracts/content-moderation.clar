@@ -6,6 +6,11 @@
 (define-constant VOTE_REWARD u10)
 (define-constant MIN_REPUTATION u100)
 (define-constant VOTING_PERIOD u144)
+(define-constant ERR-INVALID-STAKE (err u5))
+(define-constant ERR-ALREADY-STAKED (err u6))
+(define-constant ERR-NO-STAKE-FOUND (err u7))
+(define-constant STAKE_LOCKUP_PERIOD u720)
+(define-constant MIN_STAKE_AMOUNT u1000)
 
 ;; Data Maps
 (define-map contents
@@ -32,6 +37,14 @@
         voter: principal,
     }
     { vote: bool }
+)
+(define-map moderator-stakes
+    { moderator: principal }
+    {
+        amount: uint,
+        locked-until: uint,
+        active: bool,
+    }
 )
 
 ;; Variables
@@ -153,4 +166,50 @@
         content-id: content-id,
         voter: user,
     }))
+)
+
+;; Stake tokens to become a moderator
+(define-public (stake-tokens (amount uint))
+    (let ((current-stake (default-to {
+            amount: u0,
+            locked-until: u0,
+            active: false,
+        }
+            (map-get? moderator-stakes { moderator: tx-sender })
+        )))
+        (asserts! (>= amount MIN_STAKE_AMOUNT) ERR-INVALID-STAKE)
+        (asserts! (not (get active current-stake)) ERR-ALREADY-STAKED)
+
+        ;; Transfer tokens from user to contract
+        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+
+        (map-set moderator-stakes { moderator: tx-sender } {
+            amount: amount,
+            locked-until: (+ stacks-block-height STAKE_LOCKUP_PERIOD),
+            active: true,
+        })
+        (ok true)
+    )
+)
+
+;; Unstake tokens after lockup period
+(define-public (unstake-tokens)
+    (let ((stake (unwrap! (map-get? moderator-stakes { moderator: tx-sender })
+            ERR-NO-STAKE-FOUND
+        )))
+        (asserts! (get active stake) ERR-NO-STAKE-FOUND)
+        (asserts! (>= stacks-block-height (get locked-until stake))
+            ERR-NOT-AUTHORIZED
+        )
+
+        ;; Transfer tokens back to user
+        (try! (as-contract (stx-transfer? (get amount stake) tx-sender tx-sender)))
+
+        (map-set moderator-stakes { moderator: tx-sender } {
+            amount: u0,
+            locked-until: u0,
+            active: false,
+        })
+        (ok true)
+    )
 )
