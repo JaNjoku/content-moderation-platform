@@ -11,6 +11,11 @@
 (define-constant ERR-NO-STAKE-FOUND (err u7))
 (define-constant STAKE_LOCKUP_PERIOD u720)
 (define-constant MIN_STAKE_AMOUNT u1000)
+(define-constant ERR-COOLDOWN-ACTIVE (err u8))
+(define-constant ERR-INVALID-REPORT (err u9))
+(define-constant REPORT_THRESHOLD u3)
+(define-constant COOLDOWN_PERIOD u72)
+(define-constant CHALLENGER_REWARD_PERCENTAGE u5)
 
 ;; Data Maps
 (define-map contents
@@ -44,6 +49,33 @@
         amount: uint,
         locked-until: uint,
         active: bool,
+    }
+)
+
+(define-map content-reports
+    { content-id: uint }
+    {
+        report-count: uint,
+        reporters: (list 10 principal),
+        resolved: bool,
+    }
+)
+
+(define-map user-cooldowns
+    { user: principal }
+    { cooldown-until: uint }
+)
+
+(define-map content-challenges
+    {
+        content-id: uint,
+        challenger: principal,
+    }
+    {
+        stake-amount: uint,
+        challenge-time: uint,
+        resolved: bool,
+        successful: bool,
     }
 )
 
