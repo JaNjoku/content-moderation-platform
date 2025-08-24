@@ -708,3 +708,613 @@ describe("Content Moderation Contract - Staking System", () => {
   });
 });
 
+
+describe("Content Moderation Contract - Advanced Features & Integration", () => {
+  beforeEach(() => {
+    simnet.mineEmptyBlocks(1);
+  });
+
+  describe("Advanced Voting Scenarios", () => {
+    it("simulates a complete voting cycle with reputation building", () => {
+      // Step 1: Submit initial content to start building reputation
+      const contentHash1 = new Uint8Array(32).fill(1);
+      const submitResult1 = simnet.callPublicFn(
+        contractName,
+        "submit-content",
+        [Cl.buffer(contentHash1)],
+        wallet1
+      );
+      expect(submitResult1.result).toBeOk(Cl.uint(1));
+
+      // Step 2: Advance time and finalize to establish baseline
+      simnet.mineEmptyBlocks(145);
+      simnet.callPublicFn(contractName, "finalize-moderation", [Cl.uint(1)], wallet1);
+
+      // Step 3: Check that voting still requires reputation (system consistency)
+      const contentHash2 = new Uint8Array(32).fill(2);
+      simnet.callPublicFn(contractName, "submit-content", [Cl.buffer(contentHash2)], wallet2);
+
+      const voteAttempt = simnet.callPublicFn(
+        contractName,
+        "vote",
+        [Cl.uint(2), Cl.bool(true)],
+        wallet1
+      );
+
+      expect(voteAttempt.result).toBeErr(Cl.uint(4)); // Still requires reputation
+    });
+
+    it("tests voting behavior across multiple content submissions", () => {
+      // Submit multiple pieces of content
+      const contents = [
+        new Uint8Array(32).fill(10),
+        new Uint8Array(32).fill(20),
+        new Uint8Array(32).fill(30),
+      ];
+
+      const contentIds: number[] = [];
+      
+      contents.forEach((contentHash, index) => {
+        const result = simnet.callPublicFn(
+          contractName,
+          "submit-content",
+          [Cl.buffer(contentHash)],
+          wallet1
+        );
+        expect(result.result).toBeOk(Cl.uint(index + 1));
+        contentIds.push(index + 1);
+      });
+
+      // Test voting attempts on all content
+      contentIds.forEach(contentId => {
+        const voteResult = simnet.callPublicFn(
+          contractName,
+          "vote",
+          [Cl.uint(contentId), Cl.bool(true)],
+          wallet2
+        );
+        expect(voteResult.result).toBeErr(Cl.uint(4)); // All should fail due to reputation
+      });
+
+      // Verify all content exists
+      contentIds.forEach(contentId => {
+        const content = simnet.callReadOnlyFn(
+          contractName,
+          "get-content",
+          [Cl.uint(contentId)],
+          wallet1
+        );
+        expect(content.result).not.toBeNone();
+      });
+    });
+
+    it("validates voting period timing across different content", () => {
+      // Submit content at different times
+      simnet.callPublicFn(
+        contractName,
+        "submit-content",
+        [Cl.buffer(new Uint8Array(32).fill(1))],
+        wallet1
+      );
+
+      simnet.mineEmptyBlocks(50); // Advance partway through voting period
+
+      simnet.callPublicFn(
+        contractName,
+        "submit-content",
+        [Cl.buffer(new Uint8Array(32).fill(2))],
+        wallet2
+      );
+
+      simnet.mineEmptyBlocks(100); // Content 1 should expire, Content 2 still active
+
+      // Content 1 should be expired (50 + 100 = 150 > 144)
+      const vote1 = simnet.callPublicFn(
+        contractName,
+        "vote",
+        [Cl.uint(1), Cl.bool(true)],
+        wallet1
+      );
+      expect(vote1.result).toBeErr(Cl.uint(1)); // ERR-NOT-AUTHORIZED (expired)
+
+      // Content 2 should still be in voting period (100 < 144)
+      const vote2 = simnet.callPublicFn(
+        contractName,
+        "vote",
+        [Cl.uint(2), Cl.bool(true)],
+        wallet1
+      );
+      expect(vote2.result).toBeErr(Cl.uint(4)); // ERR-INSUFFICIENT-REPUTATION (still in period)
+    });
+  });
+
+  describe("Complex Integration Workflows", () => {
+    it("tests staking moderator participating in full content lifecycle", () => {
+      // Step 1: Stake tokens to become moderator
+      const stakeAmount = 2000;
+      const stakeResult = simnet.callPublicFn(
+        contractName,
+        "stake-tokens",
+        [Cl.uint(stakeAmount)],
+        wallet1
+      );
+      expect(stakeResult.result).toBeOk(Cl.bool(true));
+
+      // Step 2: Submit content as moderator
+      const contentHash = new Uint8Array(32).fill(100);
+      const submitResult = simnet.callPublicFn(
+        contractName,
+        "submit-content",
+        [Cl.buffer(contentHash)],
+        wallet1
+      );
+      expect(submitResult.result).toBeOk(Cl.uint(1));
+
+      // Step 3: Attempt to vote (should still fail due to reputation)
+      const voteResult = simnet.callPublicFn(
+        contractName,
+        "vote",
+        [Cl.uint(1), Cl.bool(true)],
+        wallet1
+      );
+      expect(voteResult.result).toBeErr(Cl.uint(4)); // Staking doesn't override reputation requirement
+
+      // Step 4: Finalize moderation after voting period
+      simnet.mineEmptyBlocks(145);
+      const finalizeResult = simnet.callPublicFn(
+        contractName,
+        "finalize-moderation",
+        [Cl.uint(1)],
+        wallet1
+      );
+      expect(finalizeResult.result).toBeOk(Cl.bool(true));
+
+      // Step 5: Verify moderator can still unstake (content operations don't affect staking)
+      simnet.mineEmptyBlocks(720);
+      const unstakeResult = simnet.callPublicFn(
+        contractName,
+        "unstake-tokens",
+        [],
+        wallet1
+      );
+      expect(unstakeResult).not.toBeErr(Cl.uint(1)); // Should not be lockup error
+    });
+
+    it("tests multiple users with staking and content interactions", () => {
+      // Multiple users stake
+      const stakeAmount = 1500;
+      
+      const stake1 = simnet.callPublicFn(contractName, "stake-tokens", [Cl.uint(stakeAmount)], wallet1);
+      const stake2 = simnet.callPublicFn(contractName, "stake-tokens", [Cl.uint(stakeAmount)], wallet2);
+      const stake3 = simnet.callPublicFn(contractName, "stake-tokens", [Cl.uint(stakeAmount)], wallet3);
+
+      expect(stake1.result).toBeOk(Cl.bool(true));
+      expect(stake2.result).toBeOk(Cl.bool(true));
+      expect(stake3.result).toBeOk(Cl.bool(true));
+
+      // Each user submits content
+      const content1 = simnet.callPublicFn(contractName, "submit-content", [Cl.buffer(new Uint8Array(32).fill(1))], wallet1);
+      const content2 = simnet.callPublicFn(contractName, "submit-content", [Cl.buffer(new Uint8Array(32).fill(2))], wallet2);
+      const content3 = simnet.callPublicFn(contractName, "submit-content", [Cl.buffer(new Uint8Array(32).fill(3))], wallet3);
+
+      expect(content1.result).toBeOk(Cl.uint(1));
+      expect(content2.result).toBeOk(Cl.uint(2));
+      expect(content3.result).toBeOk(Cl.uint(3));
+
+      // Cross-voting attempts (all should fail due to reputation)
+      const vote1on2 = simnet.callPublicFn(contractName, "vote", [Cl.uint(2), Cl.bool(true)], wallet1);
+      const vote2on3 = simnet.callPublicFn(contractName, "vote", [Cl.uint(3), Cl.bool(false)], wallet2);
+      const vote3on1 = simnet.callPublicFn(contractName, "vote", [Cl.uint(1), Cl.bool(true)], wallet3);
+
+      expect(vote1on2.result).toBeErr(Cl.uint(4));
+      expect(vote2on3.result).toBeErr(Cl.uint(4));
+      expect(vote3on1.result).toBeErr(Cl.uint(4));
+
+      // Finalize all content after voting period
+      simnet.mineEmptyBlocks(145);
+      
+      const finalize1 = simnet.callPublicFn(contractName, "finalize-moderation", [Cl.uint(1)], wallet1);
+      const finalize2 = simnet.callPublicFn(contractName, "finalize-moderation", [Cl.uint(2)], wallet2);
+      const finalize3 = simnet.callPublicFn(contractName, "finalize-moderation", [Cl.uint(3)], wallet3);
+
+      expect(finalize1.result).toBeOk(Cl.bool(true));
+      expect(finalize2.result).toBeOk(Cl.bool(true));
+      expect(finalize3.result).toBeOk(Cl.bool(true));
+    });
+  });
+
+  describe("Edge Cases and Boundary Conditions", () => {
+    it("tests content submission at block boundaries", () => {
+      // Submit content right before block boundary
+      const contentHash = new Uint8Array(32).fill(50);
+      const submitResult = simnet.callPublicFn(
+        contractName,
+        "submit-content",
+        [Cl.buffer(contentHash)],
+        wallet1
+      );
+      expect(submitResult.result).toBeOk(Cl.uint(1));
+
+      // Test voting at exact boundary (144 blocks later)
+      simnet.mineEmptyBlocks(144);
+      
+      const voteAtBoundary = simnet.callPublicFn(
+        contractName,
+        "vote",
+        [Cl.uint(1), Cl.bool(true)],
+        wallet1
+      );
+      // Should fail as voting period has expired (>= condition in contract)
+      expect(voteAtBoundary.result).toBeErr(Cl.uint(1)); // ERR-NOT-AUTHORIZED
+
+      // Test finalization right after boundary
+      const finalizeResult = simnet.callPublicFn(
+        contractName,
+        "finalize-moderation",
+        [Cl.uint(1)],
+        wallet1
+      );
+      expect(finalizeResult.result).toBeOk(Cl.bool(true));
+    });
+
+    it("tests staking at exact minimum boundaries", () => {
+      // Test with exact minimum stake amount
+      const exactMin = 1000;
+      const exactResult = simnet.callPublicFn(
+        contractName,
+        "stake-tokens",
+        [Cl.uint(exactMin)],
+        wallet1
+      );
+      expect(exactResult.result).toBeOk(Cl.bool(true));
+
+      // Test unstaking at exact lockup boundary
+      simnet.mineEmptyBlocks(720); // Exact lockup period
+      
+      const unstakeAtBoundary = simnet.callPublicFn(
+        contractName,
+        "unstake-tokens",
+        [],
+        wallet1
+      );
+      expect(unstakeAtBoundary.result).not.toBeErr(Cl.uint(1)); // Should not be lockup error
+
+      // Test re-staking with minimum + 1
+      const restakeResult = simnet.callPublicFn(
+        contractName,
+        "stake-tokens",
+        [Cl.uint(exactMin + 1)],
+        wallet2
+      );
+      expect(restakeResult.result).toBeOk(Cl.bool(true));
+    });
+
+    it("tests error handling with invalid content IDs", () => {
+      // Test various invalid content IDs
+      const invalidIds = [0, 999, 1000000];
+      
+      invalidIds.forEach(invalidId => {
+        // Test voting on invalid content
+        const voteResult = simnet.callPublicFn(
+          contractName,
+          "vote",
+          [Cl.uint(invalidId), Cl.bool(true)],
+          wallet1
+        );
+        expect(voteResult.result).toBeErr(Cl.uint(3)); // ERR-CONTENT-NOT-FOUND
+
+        // Test finalization on invalid content
+        const finalizeResult = simnet.callPublicFn(
+          contractName,
+          "finalize-moderation",
+          [Cl.uint(invalidId)],
+          wallet1
+        );
+        expect(finalizeResult.result).toBeErr(Cl.uint(3)); // ERR-CONTENT-NOT-FOUND
+
+        // Test reading invalid content
+        const readResult = simnet.callReadOnlyFn(
+          contractName,
+          "get-content",
+          [Cl.uint(invalidId)],
+          wallet1
+        );
+        expect(readResult.result).toBeNone();
+      });
+    });
+
+    it("tests system behavior with zero stake amounts", () => {
+      // Test staking zero amount
+      const zeroStakeResult = simnet.callPublicFn(
+        contractName,
+        "stake-tokens",
+        [Cl.uint(0)],
+        wallet1
+      );
+      expect(zeroStakeResult.result).toBeErr(Cl.uint(5)); // ERR-INVALID-STAKE
+
+      // Test very small amounts below minimum
+      const smallAmounts = [1, 10, 100, 999];
+      smallAmounts.forEach(amount => {
+        const result = simnet.callPublicFn(
+          contractName,
+          "stake-tokens",
+          [Cl.uint(amount)],
+          wallet2
+        );
+        expect(result.result).toBeErr(Cl.uint(5)); // ERR-INVALID-STAKE
+      });
+    });
+  });
+
+  describe("Comprehensive Workflow Tests", () => {
+    it("simulates complete content moderation lifecycle", () => {
+      // Phase 1: Setup - Multiple users stake
+      const users = [wallet1, wallet2, wallet3];
+      const stakeAmount = 1500;
+      
+      users.forEach(user => {
+        const stakeResult = simnet.callPublicFn(
+          contractName,
+          "stake-tokens",
+          [Cl.uint(stakeAmount)],
+          user
+        );
+        expect(stakeResult.result).toBeOk(Cl.bool(true));
+      });
+
+      // Phase 2: Content submission wave
+      const contentHashes = [
+        new Uint8Array(32).fill(100),
+        new Uint8Array(32).fill(200),
+        new Uint8Array(32).fill(300),
+        new Uint8Array(32).fill(400),
+        new Uint8Array(32).fill(500),
+      ];
+
+      const contentIds: number[] = [];
+      contentHashes.forEach((hash, index) => {
+        const result = simnet.callPublicFn(
+          contractName,
+          "submit-content",
+          [Cl.buffer(hash)],
+          users[index % users.length]
+        );
+        expect(result.result).toBeOk(Cl.uint(index + 1));
+        contentIds.push(index + 1);
+      });
+
+      // Phase 3: Voting period - attempt votes (all should fail due to reputation)
+      contentIds.forEach(contentId => {
+        users.forEach(user => {
+          const voteResult = simnet.callPublicFn(
+            contractName,
+            "vote",
+            [Cl.uint(contentId), Cl.bool(Math.random() > 0.5)],
+            user
+          );
+          expect(voteResult.result).toBeErr(Cl.uint(4)); // ERR-INSUFFICIENT-REPUTATION
+        });
+      });
+
+      // Phase 4: Time progression and finalization
+      simnet.mineEmptyBlocks(145); // End voting period
+
+      contentIds.forEach(contentId => {
+        const finalizeResult = simnet.callPublicFn(
+          contractName,
+          "finalize-moderation",
+          [Cl.uint(contentId)],
+          users[0] // Any user can finalize
+        );
+        expect(finalizeResult.result).toBeOk(Cl.bool(true));
+      });
+
+      // Phase 5: Verify final states
+      contentIds.forEach(contentId => {
+        const content = simnet.callReadOnlyFn(
+          contractName,
+          "get-content",
+          [Cl.uint(contentId)],
+          wallet1
+        );
+        expect(content.result).not.toBeNone();
+        
+        // Verify no one has voted
+        users.forEach(user => {
+          const hasVoted = simnet.callReadOnlyFn(
+            contractName,
+            "has-voted",
+            [Cl.uint(contentId), Cl.principal(user)],
+            wallet1
+          );
+          expect(hasVoted.result).toBeBool(false);
+        });
+      });
+
+      // Phase 6: Cleanup - unstake after lockup
+      simnet.mineEmptyBlocks(720);
+      users.forEach(user => {
+        const unstakeResult = simnet.callPublicFn(
+          contractName,
+          "unstake-tokens",
+          [],
+          user
+        );
+        expect(unstakeResult.result).not.toBeErr(Cl.uint(1)); // Should not be lockup error
+      });
+    });
+
+    it("tests system resilience under rapid operations", () => {
+      // Rapid staking by multiple users
+      const rapidStakeAmount = 1000;
+      const stakeResults = [
+        simnet.callPublicFn(contractName, "stake-tokens", [Cl.uint(rapidStakeAmount)], wallet1),
+        simnet.callPublicFn(contractName, "stake-tokens", [Cl.uint(rapidStakeAmount)], wallet2),
+        simnet.callPublicFn(contractName, "stake-tokens", [Cl.uint(rapidStakeAmount)], wallet3),
+      ];
+
+      stakeResults.forEach(result => {
+        expect(result.result).toBeOk(Cl.bool(true));
+      });
+
+      // Rapid content submissions
+      const rapidContentHashes = Array.from({ length: 5 }, (_, i) => 
+        new Uint8Array(32).fill(i + 1)
+      );
+
+      const submitResults = rapidContentHashes.map((hash, index) => 
+        simnet.callPublicFn(
+          contractName,
+          "submit-content",
+          [Cl.buffer(hash)],
+          [wallet1, wallet2, wallet3][index % 3]
+        )
+      );
+
+      submitResults.forEach((result, index) => {
+        expect(result.result).toBeOk(Cl.uint(index + 1));
+      });
+
+      // Rapid voting attempts (should all fail consistently)
+      const voteResults = [];
+      for (let contentId = 1; contentId <= 5; contentId++) {
+        for (const user of [wallet1, wallet2, wallet3]) {
+          const result = simnet.callPublicFn(
+            contractName,
+            "vote",
+            [Cl.uint(contentId), Cl.bool(true)],
+            user
+          );
+          voteResults.push(result);
+        }
+      }
+
+      voteResults.forEach(result => {
+        expect(result.result).toBeErr(Cl.uint(4)); // All should fail due to reputation
+      });
+
+      // Verify system state consistency
+      for (let contentId = 1; contentId <= 5; contentId++) {
+        const content = simnet.callReadOnlyFn(
+          contractName,
+          "get-content",
+          [Cl.uint(contentId)],
+          wallet1
+        );
+        expect(content.result).not.toBeNone();
+      }
+    });
+  });
+
+  describe("System Consistency and State Management", () => {
+    it("verifies reputation system consistency", () => {
+      // Check that all users start with zero reputation
+      const users = [wallet1, wallet2, wallet3];
+      users.forEach(user => {
+        const reputation = simnet.callReadOnlyFn(
+          contractName,
+          "get-user-reputation",
+          [Cl.principal(user)],
+          wallet1
+        );
+        expect(reputation.result).toBeTuple({
+          score: Cl.uint(0)
+        });
+      });
+
+      // Reputation should remain zero after various operations
+      simnet.callPublicFn(contractName, "stake-tokens", [Cl.uint(1000)], wallet1);
+      simnet.callPublicFn(contractName, "submit-content", [Cl.buffer(new Uint8Array(32).fill(1))], wallet1);
+
+      const reputationAfter = simnet.callReadOnlyFn(
+        contractName,
+        "get-user-reputation",
+        [Cl.principal(wallet1)],
+        wallet1
+      );
+      expect(reputationAfter.result).toBeTuple({
+        score: Cl.uint(0)
+      });
+    });
+
+    it("verifies voting state consistency", () => {
+      // Submit content and verify initial voting state
+      simnet.callPublicFn(
+        contractName,
+        "submit-content",
+        [Cl.buffer(new Uint8Array(32).fill(1))],
+        wallet1
+      );
+
+      // Check that no one has voted initially
+      const users = [wallet1, wallet2, wallet3];
+      users.forEach(user => {
+        const hasVoted = simnet.callReadOnlyFn(
+          contractName,
+          "has-voted",
+          [Cl.uint(1), Cl.principal(user)],
+          wallet1
+        );
+        expect(hasVoted.result).toBeBool(false);
+      });
+
+      // Attempt votes (will fail but shouldn't change voting state incorrectly)
+      users.forEach(user => {
+        simnet.callPublicFn(
+          contractName,
+          "vote",
+          [Cl.uint(1), Cl.bool(true)],
+          user
+        );
+      });
+
+      // Verify voting state remains consistent (no one should have voted successfully)
+      users.forEach(user => {
+        const hasVoted = simnet.callReadOnlyFn(
+          contractName,
+          "has-voted",
+          [Cl.uint(1), Cl.principal(user)],
+          wallet1
+        );
+        expect(hasVoted.result).toBeBool(false);
+      });
+    });
+
+    it("verifies content counter consistency", () => {
+      // Submit multiple pieces of content and verify counter increments properly
+      const numSubmissions = 7;
+      
+      for (let i = 1; i <= numSubmissions; i++) {
+        const result = simnet.callPublicFn(
+          contractName,
+          "submit-content",
+          [Cl.buffer(new Uint8Array(32).fill(i))],
+          [wallet1, wallet2, wallet3][(i - 1) % 3]
+        );
+        expect(result.result).toBeOk(Cl.uint(i));
+      }
+
+      // Verify all content exists and can be retrieved
+      for (let i = 1; i <= numSubmissions; i++) {
+        const content = simnet.callReadOnlyFn(
+          contractName,
+          "get-content",
+          [Cl.uint(i)],
+          wallet1
+        );
+        expect(content.result).not.toBeNone();
+      }
+
+      // Verify content beyond the counter doesn't exist
+      const nonExistentContent = simnet.callReadOnlyFn(
+        contractName,
+        "get-content",
+        [Cl.uint(numSubmissions + 1)],
+        wallet1
+      );
+      expect(nonExistentContent.result).toBeNone();
+    });
+  });
+});
+
